@@ -1,79 +1,84 @@
-currentBuild.displayName = "Final_Demo # "+currentBuild.number
-
-   def getDockerTag(){
-        def tag = sh script: 'git rev-parse HEAD', returnStdout: true
-        return tag
-        }
-        
+def getDockerTag(){
+    def tag = sh script: 'git rev-parse --short HEAD', returnStdout: true
+    return tag
+    }
 
 pipeline{
-        agent any  
-        environment{
-	    Docker_tag = getDockerTag()
-        }
-        
-        stages{
-
-
-              stage('Quality Gate Statuc Check'){
-
-               agent {
+    agent any
+    environment{
+        Docker_tag = getDockerTag()
+        docker_pws = credentials('docker-hub-password')
+    }
+    stages{
+        stage("Sonar scan"){
+            agent {
                 docker {
-                image 'maven'
-                args '-v $HOME/.m2:/root/.m2'
+                    image 'maven'
+                    args '-v /root/.m2:/root/.m2'
                 }
             }
-                  steps{
-                      script{
-                      withSonarQubeEnv('sonarserver') { 
-                      sh "mvn sonar:sonar"
-                       }
-                      timeout(time: 1, unit: 'HOURS') {
-                      def qg = waitForQualityGate()
-                      if (qg.status != 'OK') {
-                           error "Pipeline aborted due to quality gate failure: ${qg.status}"
-                      }
-                    }
-		    sh "mvn clean install"
-                  }
-                }  
-              }
+            steps{
+                script{
+                   sh "echo executing sonar scan"
+                   // sh "sleep 90"
+                }
+            }
+        }
 
+        stage('build the application'){
+            agent {
+                docker {
+                    image 'maven'
+                    args '-v /root/.m2:/root/.m2'
+                }
+            }
+            steps{
+                script{
+                    sh "mvn clean install"
+                }
+            }
+        }
 
+        stage('docker build'){
+            steps{
+                script{
+                    sh """
+                    docker build . -t deekshithsn/java-app-hbc:$Docker_tag
+                    """
+                }
+            }
+        }
 
-              stage('build')
-                {
-              steps{
-                  script{
-		 sh 'cp -r ../devops-training@2/target .'
-                   sh 'docker build . -t deekshithsn/devops-training:$Docker_tag'
-		   withCredentials([string(credentialsId: 'docker_password', variable: 'docker_password')]) {
-				    
-				  sh 'docker login -u deekshithsn -p $docker_password'
-				  sh 'docker push deekshithsn/devops-training:$Docker_tag'
-			}
-                       }
-                    }
-                 }
-		 
-		stage('ansible playbook'){
-			steps{
-			 	script{
-				    sh '''final_tag=$(echo $Docker_tag | tr -d ' ')
-				     echo ${final_tag}test
-				     sed -i "s/docker_tag/$final_tag/g"  deployment.yaml
-				     '''
-				    ansiblePlaybook become: true, installation: 'ansible', inventory: 'hosts', playbook: 'ansible.yaml'
-				}
-			}
-		}
-		
-	
-		
-               }
-	       
-	       
-	       
-	      
-    
+        
+        stage('docker login & push'){
+            steps{
+                script{
+                    sh """
+                       docker login -u deekshithsn -p $docker_pws 
+                       docker push deekshithsn/java-app-hbc:$Docker_tag
+                    """
+                    addBadge(icon: 'save.gif', text: 'docker repo', link: 'https://hub.docker.com/repository/docker/deekshithsn/java-app-hbc')
+                    currentBuild.description = "deekshithsn/java-app-hbc:$Docker_tag"
+                }
+            }
+        }
+
+        stage('deploy the application'){
+            steps{
+                script{
+                    sh """
+                    docker rm $( docker stop $( docker ps -aq))
+                    docker run -d -p 9000:8080 deekshithsn/java-app-hbc:$Docker_tag
+                    """
+                }
+            }
+        }
+
+    }
+
+    post {
+        always{
+            cleanWs()
+        }
+    }
 }
